@@ -75,60 +75,104 @@ struct vm {
 /* Host-side representation of the vCPU created for this VM. */
 struct vcpu {
 	int fd;      /* File descriptor representing the created VCPU. */
-	struct kvm_run *kvm_run;    /* */
+	struct kvm_run *kvm_run;    /* [?] */
 };
 
+
+/* Performs initial setup of a VM. */
 void vm_init(struct vm *vm, size_t mem_size)
 {
+	/* KVM API Version */
 	int api_ver;
+
+	/* This struct describes the mapping between a 
+		 region of the host process's virtual memory 
+		 and a region of the guest's physical address 
+		 space.
+	 */
 	struct kvm_userspace_memory_region memreg;
 
+	/* [STEP 1]: Open a handle to the kernel's kvm interface. */
 	vm->sys_fd = open("/dev/kvm", O_RDWR);
 	if (vm->sys_fd < 0) {
 		perror("open /dev/kvm");
 		exit(1);
 	}
 
+	/* [STEP 2]: Query the KVM API version. */
 	api_ver = ioctl(vm->sys_fd, KVM_GET_API_VERSION, 0);
 	if (api_ver < 0) {
 		perror("KVM_GET_API_VERSION");
 		exit(1);
 	}
 
+	/* [STEP 3]: Verify the API version. */
 	if (api_ver != KVM_API_VERSION) {
-		fprintf(stderr, "Got KVM api version %d, expected %d\n",
-			api_ver, KVM_API_VERSION);
+		fprintf(
+			stderr, "Got KVM api version %d, expected %d\n",
+			api_ver, KVM_API_VERSION
+		);
 		exit(1);
 	}
 
+	/* [STEP 4]: Create a virtual machine.
+
+		KVM_CREATE_VM creates the resources needed to 
+		represent a VM inside the kernel and gives 
+		userspace a handle to them.
+	*/
 	vm->fd = ioctl(vm->sys_fd, KVM_CREATE_VM, 0);
 	if (vm->fd < 0) {
 		perror("KVM_CREATE_VM");
 		exit(1);
 	}
 
-        if (ioctl(vm->fd, KVM_SET_TSS_ADDR, 0xfffbd000) < 0) {
-                perror("KVM_SET_TSS_ADDR");
+	/* [STEP 5]: [?] */
+	if (
+		ioctl(vm->fd, KVM_SET_TSS_ADDR, 0xfffbd000) < 0
+	){
+		perror("KVM_SET_TSS_ADDR");
 		exit(1);
 	}
 
-	vm->mem = mmap(NULL, mem_size, PROT_READ | PROT_WRITE,
-		   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	/* [STEP 6]: Reserve host's userspace memory that 
+			will be used as the guest's physical memory. */
+	vm->mem = mmap(
+		NULL, 
+		mem_size, 
+		PROT_READ | PROT_WRITE,
+		MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0
+	);
 	if (vm->mem == MAP_FAILED) {
 		perror("mmap mem");
 		exit(1);
 	}
 
+	/* A hint to the kernel to enable KSM. */
 	madvise(vm->mem, mem_size, MADV_MERGEABLE);
 
-	memreg.slot = 0;
-	memreg.flags = 0;
-	memreg.guest_phys_addr = 0;
-	memreg.memory_size = mem_size;
+	/* [STEP 7]: Set the values in memreg. */
+
+	/* Where the memory exists in the host process? */
 	memreg.userspace_addr = (unsigned long)vm->mem;
-        if (ioctl(vm->fd, KVM_SET_USER_MEMORY_REGION, &memreg) < 0) {
+
+	/* Where the host process's memory appears in 
+		 the guest's physical address space? */
+	memreg.guest_phys_addr = 0;
+
+	/* The size of the memory. */
+	memreg.memory_size = mem_size;
+
+	memreg.slot = 0;     /* # guest memory region. */
+	memreg.flags = 0;    /* [?] */
+
+	/* [STEP 8]: Pass the updated memreg description 
+			to KVM. */
+	if (
+		ioctl(vm->fd, KVM_SET_USER_MEMORY_REGION, &memreg) < 0
+	){
 		perror("KVM_SET_USER_MEMORY_REGION");
-                exit(1);
+		exit(1);
 	}
 }
 
