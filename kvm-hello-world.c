@@ -9,65 +9,73 @@
 #include <stdint.h>
 #include <linux/kvm.h>
 
-/* CR0 bits */
-#define CR0_PE 1u
-#define CR0_MP (1U << 1)
-#define CR0_EM (1U << 2)
-#define CR0_TS (1U << 3)
-#define CR0_ET (1U << 4)
-#define CR0_NE (1U << 5)
-#define CR0_WP (1U << 16)
-#define CR0_AM (1U << 18)
-#define CR0_NW (1U << 29)
-#define CR0_CD (1U << 30)
-#define CR0_PG (1U << 31)
+/* Bit masks for meaningful bits in the CR0 control register. */
+#define CR0_PE 1u            /* (PE) Protected-mode enable */
+#define CR0_MP (1U << 1)     /* (MP) Monitor co-processor  */
+#define CR0_EM (1U << 2)     /* (EM) x87 FPU Emulation */
+#define CR0_TS (1U << 3)     /* (TS) Task switched  */
+#define CR0_ET (1U << 4)     /* (ET) Extension type */
+#define CR0_NE (1U << 5)     /* (NE) Numeric error  */
+#define CR0_WP (1U << 16)    /* (WP) Write protect  */
+#define CR0_AM (1U << 18)    /* (AM) Alignment mask */
+#define CR0_NW (1U << 29)    /* (NW) Not-write through */
+#define CR0_CD (1U << 30)    /* (CD) Cache disable */
+#define CR0_PG (1U << 31)    /* (PG) Paging */
 
-/* CR4 bits */
-#define CR4_VME 1
-#define CR4_PVI (1U << 1)
-#define CR4_TSD (1U << 2)
-#define CR4_DE (1U << 3)
-#define CR4_PSE (1U << 4)
-#define CR4_PAE (1U << 5)
-#define CR4_MCE (1U << 6)
-#define CR4_PGE (1U << 7)
-#define CR4_PCE (1U << 8)
-#define CR4_OSFXSR (1U << 8)
-#define CR4_OSXMMEXCPT (1U << 10)
-#define CR4_UMIP (1U << 11)
-#define CR4_VMXE (1U << 13)
-#define CR4_SMXE (1U << 14)
-#define CR4_FSGSBASE (1U << 16)
-#define CR4_PCIDE (1U << 17)
-#define CR4_OSXSAVE (1U << 18)
-#define CR4_SMEP (1U << 20)
-#define CR4_SMAP (1U << 21)
+/* Bit masks for meaningful bits in the CR4 control register. */
+#define CR4_VME 1               /* (VME) Virtual 8086 Mode Extensions */
+#define CR4_PVI (1U << 1)       /* (PVI) Protected-mode Virtual Interrupts */
+#define CR4_TSD (1U << 2)       /* (TSD) Time Stamp Disable */
+#define CR4_DE  (1U << 3)       /* (DE)  Debugging Extensions */
+#define CR4_PSE (1U << 4)       /* (PSE) Page Size Extension  */
+#define CR4_PAE (1U << 5)       /* (PAE) Physical Address Extension */
+#define CR4_MCE (1U << 6)       /* (MCE) Machine Check Exception */
+#define CR4_PGE (1U << 7)       /* (PGE) Page Global Enabled */
+#define CR4_PCE (1U << 8)       /* (PCE) Performance-Monitoring Counter enable */
+#define CR4_OSFXSR (1U << 8)    /* (OSFXSR) Operating system support for FXSAVE and FXRSTOR instructions */
+#define CR4_OSXMMEXCPT (1U << 10)    /* (OSXMMEXCPT) Operating System Support for Unmasked SIMD Floating-Point Exceptions */
+#define CR4_UMIP (1U << 11)          /* (UMIP) User-Mode Instruction Prevention  */
+#define CR4_VMXE (1U << 13)          /* (VMXE) Virtual Machine Extensions Enable */
+#define CR4_SMXE (1U << 14)          /* (SMXE) Safer Mode Extensions Enable */
+#define CR4_FSGSBASE (1U << 16)      /* (FSGSBASE) Enables the instructions RDFSBASE, RDGSBASE, WRFSBASE, and WRGSBASE */
+#define CR4_PCIDE    (1U << 17)      /* (PCIDE) PCID Enable */
+#define CR4_OSXSAVE  (1U << 18)      /* (OSXSAVE) XSAVE and Processor Extended States Enable */
+#define CR4_SMEP (1U << 20)          /* (SMEP) Supervisor Mode Execution Protection Enable */
+#define CR4_SMAP (1U << 21)          /* (SMAP) Supervisor Mode Access Prevention Enable */
 
-#define EFER_SCE 1
-#define EFER_LME (1U << 8)
-#define EFER_LMA (1U << 10)
-#define EFER_NXE (1U << 11)
+/* Bit masks for meaningful bits in the Extended Feature Enable Register (EFER). */
+#define EFER_SCE 1             /* SYSCALL enable bit */
+#define EFER_LME (1U << 8)     /* IA-32e Mode (or long mode) Enable */
+#define EFER_LMA (1U << 10)    /* IA-32e Mode Active (status bit) */
+#define EFER_NXE (1U << 11)    /* Execute Disable Bit Enable (NX) */
 
-/* 32-bit page directory entry bits */
-#define PDE32_PRESENT 1
-#define PDE32_RW (1U << 1)
-#define PDE32_USER (1U << 2)
-#define PDE32_PS (1U << 7)
+/* 32-bit Page Directory Entry (PDE) bits. */
+#define PDE32_PRESENT 1         /* (PRESENT) The PDE is valid/present */
+#define PDE32_RW (1U << 1)      /* (RW) Read/write permission (1); Read-only (0) */
+#define PDE32_USER (1U << 2)    /* (USER) Privilege level. 1 (user-mode); 0 (supervisor mode) */
+#define PDE32_PS (1U << 7)      /* (PS) Page Size */
 
-/* 64-bit page * entry bits */
-#define PDE64_PRESENT 1
-#define PDE64_RW (1U << 1)
-#define PDE64_USER (1U << 2)
-#define PDE64_ACCESSED (1U << 5)
-#define PDE64_DIRTY (1U << 6)
-#define PDE64_PS (1U << 7)
-#define PDE64_G (1U << 8)
+/* 64-bit Page Directory Entry (PDE) bits. */
+#define PDE64_PRESENT 1             /* (PRESENT) */
+#define PDE64_RW (1U << 1)          /* (RW) */
+#define PDE64_USER (1U << 2)        /* (USER) */
+#define PDE64_ACCESSED (1U << 5)    /* (ACCESSED) */
+#define PDE64_DIRTY (1U << 6)       /* (DIRTY) */
+#define PDE64_PS (1U << 7)          /* (PS) */
+#define PDE64_G (1U << 8)           /* (G) */
 
 
+/* Host-side representation of the VM created here. */
 struct vm {
-	int sys_fd;
-	int fd;
-	char *mem;
+	int   sys_fd;    /* File descriptor for /dev/kvm. */
+	int   fd;        /* File descriptor for the KVM virtual machine. */
+	char *mem;       /* Pointer to the memory region that the program maps for the guest's memory. */
+};
+
+/* Host-side representation of the vCPU created for this VM. */
+struct vcpu {
+	int fd;      /* File descriptor representing the created VCPU. */
+	struct kvm_run *kvm_run;    /* */
 };
 
 void vm_init(struct vm *vm, size_t mem_size)
@@ -124,11 +132,7 @@ void vm_init(struct vm *vm, size_t mem_size)
 	}
 }
 
-struct vcpu {
-	int fd;
-	struct kvm_run *kvm_run;
-};
-
+/* Create and initialize a vCPU. */
 void vcpu_init(struct vm *vm, struct vcpu *vcpu)
 {
 	int vcpu_mmap_size;
