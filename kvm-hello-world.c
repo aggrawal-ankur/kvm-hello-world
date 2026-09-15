@@ -64,6 +64,7 @@
 #define PDE64_PS (1U << 7)          /* (PS) */
 #define PDE64_G (1U << 8)           /* (G) */
 
+/* ---+---+---+--- Data Structures ---+---+---+--- */
 
 /* Host-side representation of the VM created here. */
 struct vm {
@@ -77,6 +78,10 @@ struct vcpu {
 	int fd;      /* File descriptor representing the created VCPU. */
 	struct kvm_run *kvm_run;    /* [?] */
 };
+
+extern const unsigned char guest16[], guest16_end[];
+extern const unsigned char guest32[], guest32_end[];
+extern const unsigned char guest64[], guest64_end[];
 
 
 /* Performs initial setup of a VM. */
@@ -181,269 +186,356 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu)
 {
 	int vcpu_mmap_size;
 
+	/* [STEP 1]: Create a vCPU. */
 	vcpu->fd = ioctl(vm->fd, KVM_CREATE_VCPU, 0);
-        if (vcpu->fd < 0) {
+	if (vcpu->fd < 0) {
 		perror("KVM_CREATE_VCPU");
-                exit(1);
+		exit(1);
 	}
 
+	/* [STEP 2]: Ask the kernel the total memory 
+			required to create a vCPU. */
 	vcpu_mmap_size = ioctl(vm->sys_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
-        if (vcpu_mmap_size <= 0) {
+	if (vcpu_mmap_size <= 0) {
 		perror("KVM_GET_VCPU_MMAP_SIZE");
-                exit(1);
+		exit(1);
 	}
 
-	vcpu->kvm_run = mmap(NULL, vcpu_mmap_size, PROT_READ | PROT_WRITE,
-			     MAP_SHARED, vcpu->fd, 0);
+	/* [STEP 3]: Reserve memory for the vCPU. */
+	vcpu->kvm_run = mmap(
+		NULL, 
+		vcpu_mmap_size, 
+		PROT_READ | PROT_WRITE,
+		MAP_SHARED, vcpu->fd, 0
+	);
 	if (vcpu->kvm_run == MAP_FAILED) {
 		perror("mmap kvm_run");
 		exit(1);
 	}
 }
 
+/* Run a VM. */
 int run_vm(struct vm *vm, struct vcpu *vcpu, size_t sz)
 {
 	struct kvm_regs regs;
 	uint64_t memval = 0;
 
 	for (;;) {
+		/* Start guest code execution. */
 		if (ioctl(vcpu->fd, KVM_RUN, 0) < 0) {
 			perror("KVM_RUN");
 			exit(1);
 		}
 
+		/* A VM exit has happened and the control has 
+			 come back to userspace. The userspace accesses 
+			 the shared vCPU state to analyze the cause 
+			 of exit and act appropriately.
+		 */
 		switch (vcpu->kvm_run->exit_reason) {
-		case KVM_EXIT_HLT:
-			goto check;
+			/* The guest ends with a HLT instruction. If 
+				 that's the reason, exit the loop. */
+		  case KVM_EXIT_HLT:
+		  	goto check;
 
-		case KVM_EXIT_IO:
-			if (vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT
-			    && vcpu->kvm_run->io.port == 0xE9) {
-				char *p = (char *)vcpu->kvm_run;
-				fwrite(p + vcpu->kvm_run->io.data_offset,
-				       vcpu->kvm_run->io.size, 1, stdout);
-				fflush(stdout);
-				continue;
-			}
+			/* If the VM EXIT is caused by an I/O 
+				 operation, handle it below and resume. */
+  		case KVM_EXIT_IO:
+  			if (
+					vcpu->kvm_run->io.direction == KVM_EXIT_IO_OUT &&
+  			  vcpu->kvm_run->io.port == 0xE9
+				){
+  				char *p = (char*)(vcpu->kvm_run);
+  				fwrite(
+						p + vcpu->kvm_run->io.data_offset,
+						vcpu->kvm_run->io.size, 1, stdout
+					);
+  				fflush(stdout);
+  				continue;
+  			}
 
-			/* fall through */
-		default:
-			fprintf(stderr,	"Got exit_reason %d,"
-				" expected KVM_EXIT_HLT (%d)\n",
-				vcpu->kvm_run->exit_reason, KVM_EXIT_HLT);
-			exit(1);
+			/* Fall through. */
+  		default:
+  			fprintf(
+					stderr,	
+					"Got exit_reason %d, expected KVM_EXIT_HLT (%d)\n",
+  				vcpu->kvm_run->exit_reason, KVM_EXIT_HLT
+				);
+  			exit(1);
 		}
 	}
 
- check:
-	if (ioctl(vcpu->fd, KVM_GET_REGS, &regs) < 0) {
-		perror("KVM_GET_REGS");
-		exit(1);
-	}
+	check:
+		/* Get the general-purpose registers. */
+		if (ioctl(vcpu->fd, KVM_GET_REGS, &regs) < 0) {
+			perror("KVM_GET_REGS");
+			exit(1);
+		}
 
-	if (regs.rax != 42) {
-		printf("Wrong result: {E,R,}AX is %lld\n", regs.rax);
-		return 0;
-	}
+		/* Check if rax contains the intended value. 
+		   It is 42, as per the guest machine-code. */
+		if (regs.rax != 42) {
+			printf("Wrong result: {E,R,}AX is %lld\n", regs.rax);
+			return 0;
+		}
 
-	memcpy(&memval, &vm->mem[0x400], sz);
-	if (memval != 42) {
-		printf("Wrong result: memory at 0x400 is %lld\n",
-		       (unsigned long long)memval);
-		return 0;
-	}
+		/* The guest stores 42 at 0x400. We check the 
+			 memory at 0x400 into sz. */
+		memcpy(&memval, &vm->mem[0x400], sz);
+		if (memval != 42) {
+			printf(
+				"Wrong result: memory at 0x400 is %lld\n",
+				(unsigned long long)(memval)
+			);
+			return 0;
+		}
 
-	return 1;
+		return 1;
 }
 
-extern const unsigned char guest16[], guest16_end[];
 
+/* The 16-bit execution environment in 8086. */
 int run_real_mode(struct vm *vm, struct vcpu *vcpu)
 {
-	struct kvm_sregs sregs;
-	struct kvm_regs regs;
+	struct kvm_sregs sregs;    /* Special CPU registers. */
+	struct kvm_regs  regs;     /* General CPU registers. */
 
-	printf("Testing real mode\n");
+	printf("Testing real mode....\n");
 
-        if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0) {
+	/* [STEP 1]: Reads special registers from the vcpu. */
+	if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0) {
 		perror("KVM_GET_SREGS");
 		exit(1);
 	}
 
+	/* [STEP 2]: Update the register state. */
 	sregs.cs.selector = 0;
 	sregs.cs.base = 0;
 
-        if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
+	/* [STEP 2]: Inform KVM about the updated register 
+			state. */
+	if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
 		perror("KVM_SET_SREGS");
 		exit(1);
 	}
 
+	/* [STEP 3]: Zero the memory representing general 
+			purpose registers. */
 	memset(&regs, 0, sizeof(regs));
-	/* Clear all FLAGS bits, except bit 1 which is always set. */
-	regs.rflags = 2;
+
+	/* [STEP 3]: Update the register state. */
+	regs.rflags = 2;    /* Bit 1's mask is 2. */
 	regs.rip = 0;
 
+	/* [STEP 4]: Inform KVM about the updated register 
+			state. */
 	if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0) {
 		perror("KVM_SET_REGS");
 		exit(1);
 	}
 
+	/* [STEP 5]: Copy the guest machine-code bytes into 
+			the host memory region that is registered with 
+			KVM as the VM's guest physical memory.
+	 */
 	memcpy(vm->mem, guest16, guest16_end-guest16);
+
+	/* Run the VM. */
 	return run_vm(vm, vcpu, 2);
 }
 
+
+/* The 80386 protected mode. */
 static void setup_protected_mode(struct kvm_sregs *sregs)
 {
 	struct kvm_segment seg = {
-		.base = 0,
+		.base  = 0,
 		.limit = 0xffffffff,
 		.selector = 1 << 3,
-		.present = 1,
-		.type = 11, /* Code: execute, read, accessed */
-		.dpl = 0,
+		.present  = 1,
+		.type = 11,     /* Code: execute, read, accessed */
+		.dpl  = 0,
 		.db = 1,
-		.s = 1, /* Code/data */
-		.l = 0,
-		.g = 1, /* 4KB granularity */
+		.s  = 1,    /* Code/data */
+		.l  = 0,
+		.g  = 1,    /* 4KB granularity */
 	};
 
-	sregs->cr0 |= CR0_PE; /* enter protected mode */
+	/* Set the protected mode bit in CR0. */
+	sregs->cr0 |= CR0_PE;
 
+	/* Set the code segment. */
 	sregs->cs = seg;
 
-	seg.type = 3; /* Data: read/write, accessed */
+	/* Update the segment type and selector in seg. */
+	seg.type = 3;    /* Data: read/write, accessed */
 	seg.selector = 2 << 3;
+
+	/* Set other segments. */
 	sregs->ds = sregs->es = sregs->fs = sregs->gs = sregs->ss = seg;
 }
-
-extern const unsigned char guest32[], guest32_end[];
 
 int run_protected_mode(struct vm *vm, struct vcpu *vcpu)
 {
 	struct kvm_sregs sregs;
-	struct kvm_regs regs;
+	struct kvm_regs  regs;
 
 	printf("Testing protected mode\n");
 
-        if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0) {
+	/* Query the special registers state. */
+	if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0) {
 		perror("KVM_GET_SREGS");
 		exit(1);
 	}
 
+	/* Setup the protected mode state. */
 	setup_protected_mode(&sregs);
 
-        if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
+	/* Inform KVM about the updated state of the 
+		 special registers. */
+	if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
 		perror("KVM_SET_SREGS");
 		exit(1);
 	}
 
+	/* Zero the general-purpose registers. */
 	memset(&regs, 0, sizeof(regs));
-	/* Clear all FLAGS bits, except bit 1 which is always set. */
+
+	/* Set bit 1 in the FLAGS register. */
 	regs.rflags = 2;
 	regs.rip = 0;
 
+	/* Inform KVM about the updated state of the 
+		 general-purpose registers. */
 	if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0) {
 		perror("KVM_SET_REGS");
 		exit(1);
 	}
 
+	/* Copy the guest machine code in the host 
+		 virtual memory reserved as the VM's guest 
+		 physical memory.
+	 */
 	memcpy(vm->mem, guest32, guest32_end-guest32);
+
+	/* Run the VM. */
 	return run_vm(vm, vcpu, 4);
 }
 
+
+/* The 80386 protected mode with paging. */
 static void setup_paged_32bit_mode(struct vm *vm, struct kvm_sregs *sregs)
 {
-	uint32_t pd_addr = 0x2000;
-	uint32_t *pd = (void *)(vm->mem + pd_addr);
+	/* Page directory address (2-level paging). */
+	uint32_t  pd_addr = 0x2000;    /* Physical address in the guest memory. */
+	uint32_t *pd = (void*)(vm->mem + pd_addr);    /* Virtual address in the host memory. */
 
-	/* A single 4MB page to cover the memory region */
+	/* A single 4MB page to cover the memory region. 
+	   Other PDEs are left zeroed, meaning not present. */
 	pd[0] = PDE32_PRESENT | PDE32_RW | PDE32_USER | PDE32_PS;
-	/* Other PDEs are left zeroed, meaning not present. */
 
+	/* Update the special-purpose registers. */
 	sregs->cr3 = pd_addr;
 	sregs->cr4 = CR4_PSE;
-	sregs->cr0
-		= CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
+	sregs->cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
 	sregs->efer = 0;
 }
 
 int run_paged_32bit_mode(struct vm *vm, struct vcpu *vcpu)
 {
 	struct kvm_sregs sregs;
-	struct kvm_regs regs;
+	struct kvm_regs  regs;
 
 	printf("Testing 32-bit paging\n");
 
-        if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0) {
+	/* Query the state of special-purpose registers. */
+	if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0) {
 		perror("KVM_GET_SREGS");
 		exit(1);
 	}
 
+	/* Setup the protected mode. */
 	setup_protected_mode(&sregs);
+
+	/* Setup the paging support. */
 	setup_paged_32bit_mode(vm, &sregs);
 
-        if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
+	/* Inform KVM about the updated state of the 
+		 special-purpose registers. */
+	if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
 		perror("KVM_SET_SREGS");
 		exit(1);
 	}
 
+	/* Zero the general-purpose registers. */
 	memset(&regs, 0, sizeof(regs));
-	/* Clear all FLAGS bits, except bit 1 which is always set. */
+
+	/* Set bit 1 in the FLAGS registers. */
 	regs.rflags = 2;
 	regs.rip = 0;
 
+	/* Inform KVM about the updated state of the 
+		 general-purpose registers. */
 	if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0) {
 		perror("KVM_SET_REGS");
 		exit(1);
 	}
 
+	/* Copy the guest instructions.*/
 	memcpy(vm->mem, guest32, guest32_end-guest32);
+
+	/* Run the VM. */
 	return run_vm(vm, vcpu, 4);
 }
 
-extern const unsigned char guest64[], guest64_end[];
 
 static void setup_64bit_code_segment(struct kvm_sregs *sregs)
 {
 	struct kvm_segment seg = {
-		.base = 0,
+		.base  = 0,
 		.limit = 0xffffffff,
 		.selector = 1 << 3,
-		.present = 1,
-		.type = 11, /* Code: execute, read, accessed */
-		.dpl = 0,
+		.present  = 1,
+		.type = 11,     /* Code: execute, read, accessed */
+		.dpl  = 0,
 		.db = 0,
-		.s = 1, /* Code/data */
-		.l = 1,
-		.g = 1, /* 4KB granularity */
+		.s  = 1,    /* Code/data */
+		.l  = 1,
+		.g  = 1,    /* 4KB granularity */
 	};
 
+	/* Set the code segment. */
 	sregs->cs = seg;
 
-	seg.type = 3; /* Data: read/write, accessed */
+	/* Update the segment type and selector. */
+	seg.type = 3;    /* Data: read/write, accessed */
 	seg.selector = 2 << 3;
+
+	/* Set the rest of the segments. */
 	sregs->ds = sregs->es = sregs->fs = sregs->gs = sregs->ss = seg;
 }
 
 static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
 {
+	/* 4-level paging. */
 	uint64_t pml4_addr = 0x2000;
-	uint64_t *pml4 = (void *)(vm->mem + pml4_addr);
+	uint64_t *pml4 = (void*)(vm->mem + pml4_addr);
 
 	uint64_t pdpt_addr = 0x3000;
-	uint64_t *pdpt = (void *)(vm->mem + pdpt_addr);
+	uint64_t *pdpt = (void*)(vm->mem + pdpt_addr);
 
 	uint64_t pd_addr = 0x4000;
-	uint64_t *pd = (void *)(vm->mem + pd_addr);
+	uint64_t *pd = (void*)(vm->mem + pd_addr);
 
+	/* Only the first entry in each table is initialized. */
 	pml4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pdpt_addr;
 	pdpt[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | pd_addr;
-	pd[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS;
+	pd[0]   = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS;
 
+	/* Update the special-purpose registers. */
 	sregs->cr3 = pml4_addr;
 	sregs->cr4 = CR4_PAE;
-	sregs->cr0
-		= CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
+	sregs->cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
 	sregs->efer = EFER_LME | EFER_LMA;
 
 	setup_64bit_code_segment(sregs);
@@ -452,27 +544,28 @@ static void setup_long_mode(struct vm *vm, struct kvm_sregs *sregs)
 int run_long_mode(struct vm *vm, struct vcpu *vcpu)
 {
 	struct kvm_sregs sregs;
-	struct kvm_regs regs;
+	struct kvm_regs  regs;
 
 	printf("Testing 64-bit mode\n");
 
-        if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0) {
+	if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0) {
 		perror("KVM_GET_SREGS");
 		exit(1);
 	}
 
 	setup_long_mode(vm, &sregs);
 
-        if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
+	if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0) {
 		perror("KVM_SET_SREGS");
 		exit(1);
 	}
 
 	memset(&regs, 0, sizeof(regs));
-	/* Clear all FLAGS bits, except bit 1 which is always set. */
+
 	regs.rflags = 2;
 	regs.rip = 0;
-	/* Create stack at top of 2 MB page and grow down. */
+
+	/* Create a stack at the top of 2 MB page and grow down. */
 	regs.rsp = 2 << 20;
 
 	if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0) {
@@ -487,38 +580,43 @@ int run_long_mode(struct vm *vm, struct vcpu *vcpu)
 
 int main(int argc, char **argv)
 {
-	struct vm vm;
+	struct vm   vm;
 	struct vcpu vcpu;
+
 	enum {
 		REAL_MODE,
 		PROTECTED_MODE,
 		PAGED_32BIT_MODE,
 		LONG_MODE,
 	} mode = REAL_MODE;
+
 	int opt;
-
-	while ((opt = getopt(argc, argv, "rspl")) != -1) {
+	while (
+		(opt = getopt(argc, argv, "rspl")) != -1
+	){
 		switch (opt) {
-		case 'r':
-			mode = REAL_MODE;
-			break;
+  		case 'r':
+  			mode = REAL_MODE;
+  			break;
 
-		case 's':
-			mode = PROTECTED_MODE;
-			break;
+	  	case 's':
+	  		mode = PROTECTED_MODE;
+	  		break;
 
-		case 'p':
-			mode = PAGED_32BIT_MODE;
-			break;
+		  case 'p':
+		  	mode = PAGED_32BIT_MODE;
+		  	break;
 
-		case 'l':
-			mode = LONG_MODE;
-			break;
+		  case 'l':
+  			mode = LONG_MODE;
+  			break;
 
-		default:
-			fprintf(stderr, "Usage: %s [ -r | -s | -p | -l ]\n",
-				argv[0]);
-			return 1;
+	  	default:
+	  		fprintf(
+					stderr, 
+					"Usage: %s [ -r | -s | -p | -l ]\n", argv[0]
+				);
+  			return 1;
 		}
 	}
 
@@ -526,17 +624,17 @@ int main(int argc, char **argv)
 	vcpu_init(&vm, &vcpu);
 
 	switch (mode) {
-	case REAL_MODE:
-		return !run_real_mode(&vm, &vcpu);
+  	case REAL_MODE:
+  		return !run_real_mode(&vm, &vcpu);
 
-	case PROTECTED_MODE:
-		return !run_protected_mode(&vm, &vcpu);
+  	case PROTECTED_MODE:
+  		return !run_protected_mode(&vm, &vcpu);
 
-	case PAGED_32BIT_MODE:
-		return !run_paged_32bit_mode(&vm, &vcpu);
+  	case PAGED_32BIT_MODE:
+  		return !run_paged_32bit_mode(&vm, &vcpu);
 
-	case LONG_MODE:
-		return !run_long_mode(&vm, &vcpu);
+	  case LONG_MODE:
+	  	return !run_long_mode(&vm, &vcpu);
 	}
 
 	return 1;
